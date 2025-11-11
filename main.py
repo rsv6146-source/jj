@@ -58,6 +58,8 @@ def init_db():
     """Create SMS messages table if it doesn't exist"""
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # Create table if not exists
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS sms_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,12 +68,24 @@ def init_db():
                 date INTEGER NOT NULL,
                 read BOOLEAN NOT NULL DEFAULT 0,
                 type INTEGER NOT NULL,
-                device_id TEXT NOT NULL DEFAULT 'unknown',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # Create index for faster queries
+        # Check if device_id column exists
+        cursor.execute("PRAGMA table_info(sms_messages)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        # Add device_id column if it doesn't exist (migration)
+        if 'device_id' not in columns:
+            print("🔧 Adding device_id column (migration)...")
+            cursor.execute('''
+                ALTER TABLE sms_messages 
+                ADD COLUMN device_id TEXT NOT NULL DEFAULT 'unknown'
+            ''')
+            print("✅ device_id column added successfully!")
+        
+        # Create indexes for faster queries
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_date ON sms_messages(date DESC)
         ''')
@@ -81,14 +95,18 @@ def init_db():
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_read ON sms_messages(read)
         ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_device_id ON sms_messages(device_id)
-        ''')
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_address_date ON sms_messages(address, date DESC)
-        ''')
+        
+        # Only create device_id index if column exists
+        if 'device_id' in columns or True:  # Will exist after migration
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_device_id ON sms_messages(device_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_address_date ON sms_messages(address, date DESC)
+            ''')
         
         conn.commit()
+        print("✅ Database initialized successfully!")
 
 # Initialize database on startup
 @app.on_event("startup")
