@@ -422,6 +422,7 @@ async def home(request: Request):
                     <button class="btn btn-secondary" onclick="filterMessages('unread')">Unread</button>
                 </div>
                 <button class="btn btn-primary" onclick="loadMessages()">🔄 Refresh</button>
+                <button class="btn" onclick="deleteAllMessages()" style="background: #ff6b6b; color: white;">🗑️ Delete All</button>
             </div>
             
             <div class="messages-container">
@@ -509,6 +510,33 @@ async def home(request: Request):
                 }
                 
                 displayMessages(filtered);
+            }
+            
+            async function deleteAllMessages() {
+                if (!confirm('⚠️ DELETE ALL MESSAGES?\\n\\nThis will PERMANENTLY delete ALL messages from the server database!\\n\\nThis action CANNOT be undone!\\n\\nAre you absolutely sure?')) {
+                    return;
+                }
+                
+                if (!confirm('⚠️ FINAL WARNING!\\n\\nYou are about to delete ALL messages.\\n\\nType OK to confirm or Cancel to abort.')) {
+                    return;
+                }
+                
+                try {
+                    const response = await fetch('/api/messages', {
+                        method: 'DELETE'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json();
+                        alert(`✅ Success!\\n\\nDeleted ${result.count} messages from server.`);
+                        loadMessages();
+                        loadStats();
+                    } else {
+                        alert('❌ Error: Failed to delete messages');
+                    }
+                } catch (error) {
+                    alert('❌ Error: ' + error.message);
+                }
             }
             
             // Display messages in UI
