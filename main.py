@@ -588,7 +588,17 @@ async def get_messages(
     with get_db() as conn:
         cursor = conn.cursor()
         
-        query = "SELECT * FROM sms_messages WHERE 1=1"
+        # Check if device_id column exists
+        cursor.execute("PRAGMA table_info(sms_messages)")
+        columns = [row[1] for row in cursor.fetchall()]
+        has_device_id = 'device_id' in columns
+        
+        # Build query based on available columns
+        if has_device_id:
+            query = "SELECT id, address, body, date, read, type, device_id, created_at FROM sms_messages WHERE 1=1"
+        else:
+            query = "SELECT id, address, body, date, read, type, created_at FROM sms_messages WHERE 1=1"
+        
         params = []
         
         if type is not None:
@@ -607,16 +617,24 @@ async def get_messages(
         
         messages = []
         for row in rows:
-            messages.append({
+            # Handle both old and new schema
+            message_dict = {
                 "id": row["id"],
                 "address": row["address"],
                 "body": row["body"],
                 "date": row["date"],
                 "read": bool(row["read"]),
                 "type": row["type"],
-                "device_id": row.get("device_id", "unknown"),
                 "created_at": row["created_at"]
-            })
+            }
+            
+            # Add device_id if column exists
+            if has_device_id:
+                message_dict["device_id"] = row.get("device_id", "unknown")
+            else:
+                message_dict["device_id"] = "unknown"
+            
+            messages.append(message_dict)
         
         return messages
 
@@ -775,6 +793,11 @@ async def get_conversation(address: str):
     with get_db() as conn:
         cursor = conn.cursor()
         
+        # Check if device_id column exists
+        cursor.execute("PRAGMA table_info(sms_messages)")
+        columns = [row[1] for row in cursor.fetchall()]
+        has_device_id = 'device_id' in columns
+        
         cursor.execute('''
             SELECT * FROM sms_messages 
             WHERE address = ? 
@@ -785,16 +808,23 @@ async def get_conversation(address: str):
         
         messages = []
         for row in rows:
-            messages.append({
+            message_dict = {
                 "id": row["id"],
                 "address": row["address"],
                 "body": row["body"],
                 "date": row["date"],
                 "read": bool(row["read"]),
                 "type": row["type"],
-                "device_id": row.get("device_id", "unknown"),
                 "created_at": row["created_at"]
-            })
+            }
+            
+            # Add device_id if column exists
+            if has_device_id:
+                message_dict["device_id"] = row.get("device_id", "unknown")
+            else:
+                message_dict["device_id"] = "unknown"
+            
+            messages.append(message_dict)
         
         return messages
 
