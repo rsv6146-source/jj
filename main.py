@@ -25,6 +25,7 @@ class SmsMessage(BaseModel):
     date: int  # Timestamp in milliseconds
     read: bool = False
     type: int  # 1 = Received, 2 = Sent
+    device_id: str  # Unique device identifier
 
 class SmsResponse(BaseModel):
     id: int
@@ -33,6 +34,7 @@ class SmsResponse(BaseModel):
     date: int
     read: bool
     type: int
+    device_id: str
     created_at: str
 
 class StatsResponse(BaseModel):
@@ -64,6 +66,7 @@ def init_db():
                 date INTEGER NOT NULL,
                 read BOOLEAN NOT NULL DEFAULT 0,
                 type INTEGER NOT NULL,
+                device_id TEXT NOT NULL DEFAULT 'unknown',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -77,6 +80,12 @@ def init_db():
         ''')
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_read ON sms_messages(read)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_device_id ON sms_messages(device_id)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_address_date ON sms_messages(address, date DESC)
         ''')
         
         conn.commit()
@@ -352,6 +361,17 @@ async def home(request: Request):
             <div class="header">
                 <h1>📱 SMS Manager</h1>
                 <p class="subtitle">View and manage all your SMS messages</p>
+                <div style="margin-top: 15px;">
+                    <a href="/conversations" style="
+                        background: #667eea;
+                        color: white;
+                        padding: 10px 20px;
+                        border-radius: 20px;
+                        text-decoration: none;
+                        font-weight: 600;
+                        display: inline-block;
+                    ">💬 Conversation View</a>
+                </div>
             </div>
             
             <div class="stats" id="stats">
@@ -548,6 +568,7 @@ async def get_messages(
                 "date": row["date"],
                 "read": bool(row["read"]),
                 "type": row["type"],
+                "device_id": row.get("device_id", "unknown"),
                 "created_at": row["created_at"]
             })
         
@@ -560,9 +581,9 @@ async def create_message(message: SmsMessage):
         cursor = conn.cursor()
         
         cursor.execute('''
-            INSERT INTO sms_messages (address, body, date, read, type)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (message.address, message.body, message.date, message.read, message.type))
+            INSERT INTO sms_messages (address, body, date, read, type, device_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (message.address, message.body, message.date, message.read, message.type, message.device_id))
         
         conn.commit()
         message_id = cursor.lastrowid
@@ -578,6 +599,7 @@ async def create_message(message: SmsMessage):
             "date": row["date"],
             "read": bool(row["read"]),
             "type": row["type"],
+            "device_id": row.get("device_id", "unknown"),
             "created_at": row["created_at"]
         }
 
@@ -587,11 +609,11 @@ async def create_messages_bulk(messages: List[SmsMessage]):
     with get_db() as conn:
         cursor = conn.cursor()
         
-        data = [(msg.address, msg.body, msg.date, msg.read, msg.type) for msg in messages]
+        data = [(msg.address, msg.body, msg.date, msg.read, msg.type, msg.device_id) for msg in messages]
         
         cursor.executemany('''
-            INSERT INTO sms_messages (address, body, date, read, type)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sms_messages (address, body, date, read, type, device_id)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', data)
         
         conn.commit()
@@ -616,6 +638,7 @@ async def get_message(message_id: int):
             "date": row["date"],
             "read": bool(row["read"]),
             "type": row["type"],
+            "device_id": row.get("device_id", "unknown"),
             "created_at": row["created_at"]
         }
 
@@ -670,6 +693,468 @@ async def delete_all_messages():
         conn.commit()
         
         return {"message": "All messages deleted successfully", "count": cursor.rowcount}
+
+@app.get("/api/conversations")
+async def get_conversations():
+    """Get all unique conversations grouped by address"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # Get unique addresses with latest message info
+        cursor.execute('''
+            SELECT 
+                address,
+                MAX(date) as last_message_date,
+                COUNT(*) as message_count,
+                SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as unread_count
+            FROM sms_messages
+            GROUP BY address
+            ORDER BY last_message_date DESC
+        ''')
+        
+        conversations = []
+        for row in cursor.fetchall():
+            conversations.append({
+                "address": row["address"],
+                "last_message_date": row["last_message_date"],
+                "message_count": row["message_count"],
+                "unread_count": row["unread_count"]
+            })
+        
+        return conversations
+
+@app.get("/api/conversation/{address}")
+async def get_conversation(address: str):
+    """Get all messages for a specific address (conversation view)"""
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT * FROM sms_messages 
+            WHERE address = ? 
+            ORDER BY date ASC
+        ''', (address,))
+        
+        rows = cursor.fetchall()
+        
+        messages = []
+        for row in rows:
+            messages.append({
+                "id": row["id"],
+                "address": row["address"],
+                "body": row["body"],
+                "date": row["date"],
+                "read": bool(row["read"]),
+                "type": row["type"],
+                "device_id": row.get("device_id", "unknown"),
+                "created_at": row["created_at"]
+            })
+        
+        return messages
+
+@app.get("/conversations", response_class=HTMLResponse)
+async def conversations_page():
+    """Conversation view page (like messaging app)"""
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>SMS Conversations</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: #f5f5f5;
+                height: 100vh;
+                overflow: hidden;
+            }
+            
+            .container {
+                display: flex;
+                height: 100vh;
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+                box-shadow: 0 0 20px rgba(0,0,0,0.1);
+            }
+            
+            /* Conversation List (Left Panel) */
+            .conversation-list {
+                width: 350px;
+                border-right: 1px solid #e0e0e0;
+                display: flex;
+                flex-direction: column;
+                background: #fafafa;
+            }
+            
+            .conversation-header {
+                padding: 20px;
+                background: #667eea;
+                color: white;
+            }
+            
+            .conversation-header h1 {
+                font-size: 1.5em;
+                margin-bottom: 5px;
+            }
+            
+            .search-bar {
+                padding: 15px;
+                background: white;
+                border-bottom: 1px solid #e0e0e0;
+            }
+            
+            .search-bar input {
+                width: 100%;
+                padding: 10px 15px;
+                border: 1px solid #e0e0e0;
+                border-radius: 20px;
+                font-size: 0.9em;
+            }
+            
+            .conversation-items {
+                flex: 1;
+                overflow-y: auto;
+            }
+            
+            .conversation-item {
+                padding: 15px 20px;
+                border-bottom: 1px solid #e0e0e0;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            
+            .conversation-item:hover {
+                background: #f0f0f0;
+            }
+            
+            .conversation-item.active {
+                background: #e8ecff;
+                border-left: 3px solid #667eea;
+            }
+            
+            .conversation-item.unread {
+                background: #f0f4ff;
+                font-weight: 600;
+            }
+            
+            .conversation-name {
+                font-weight: 600;
+                font-size: 1em;
+                margin-bottom: 5px;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .conversation-preview {
+                color: #666;
+                font-size: 0.9em;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            
+            .conversation-time {
+                color: #999;
+                font-size: 0.8em;
+            }
+            
+            .unread-badge {
+                background: #667eea;
+                color: white;
+                padding: 2px 8px;
+                border-radius: 10px;
+                font-size: 0.75em;
+                font-weight: 600;
+            }
+            
+            /* Messages Panel (Right Panel) */
+            .messages-panel {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                background: #f9f9f9;
+            }
+            
+            .messages-header {
+                padding: 20px;
+                background: white;
+                border-bottom: 1px solid #e0e0e0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            
+            .messages-header h2 {
+                font-size: 1.2em;
+                color: #333;
+            }
+            
+            .device-badge {
+                background: #e0e0e0;
+                padding: 5px 15px;
+                border-radius: 15px;
+                font-size: 0.85em;
+                color: #666;
+            }
+            
+            .messages-content {
+                flex: 1;
+                overflow-y: auto;
+                padding: 20px;
+            }
+            
+            .message-group {
+                display: flex;
+                margin-bottom: 15px;
+            }
+            
+            .message-group.sent {
+                justify-content: flex-end;
+            }
+            
+            .message-bubble {
+                max-width: 60%;
+                padding: 12px 16px;
+                border-radius: 18px;
+                position: relative;
+            }
+            
+            .message-bubble.received {
+                background: white;
+                border: 1px solid #e0e0e0;
+                color: #333;
+                border-bottom-left-radius: 4px;
+            }
+            
+            .message-bubble.sent {
+                background: #667eea;
+                color: white;
+                border-bottom-right-radius: 4px;
+            }
+            
+            .message-text {
+                line-height: 1.4;
+                word-wrap: break-word;
+            }
+            
+            .message-time {
+                font-size: 0.75em;
+                margin-top: 5px;
+                opacity: 0.7;
+            }
+            
+            .empty-state {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                color: #999;
+            }
+            
+            .empty-state-icon {
+                font-size: 4em;
+                margin-bottom: 10px;
+            }
+            
+            @media (max-width: 768px) {
+                .conversation-list {
+                    width: 100%;
+                }
+                
+                .messages-panel {
+                    display: none;
+                }
+                
+                .conversation-list.hidden {
+                    display: none;
+                }
+                
+                .messages-panel.visible {
+                    display: flex;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <!-- Conversation List -->
+            <div class="conversation-list">
+                <div class="conversation-header">
+                    <h1>💬 Messages</h1>
+                    <p style="font-size: 0.9em; opacity: 0.9;">Conversation View</p>
+                </div>
+                
+                <div class="search-bar">
+                    <input type="text" id="search-conv" placeholder="🔍 Search conversations...">
+                </div>
+                
+                <div class="conversation-items" id="conversations-list">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">💬</div>
+                        <p>Loading conversations...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Messages Panel -->
+            <div class="messages-panel">
+                <div class="messages-header">
+                    <h2 id="conversation-title">Select a conversation</h2>
+                    <span class="device-badge" id="device-badge"></span>
+                </div>
+                
+                <div class="messages-content" id="messages-content">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📱</div>
+                        <p>Select a conversation to view messages</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+            let conversations = [];
+            let currentConversation = null;
+            
+            window.onload = function() {
+                loadConversations();
+                
+                document.getElementById('search-conv').addEventListener('input', function(e) {
+                    filterConversations(e.target.value);
+                });
+            };
+            
+            async function loadConversations() {
+                try {
+                    const response = await fetch('/api/conversations');
+                    conversations = await response.json();
+                    displayConversations(conversations);
+                } catch (error) {
+                    console.error('Error loading conversations:', error);
+                }
+            }
+            
+            function displayConversations(convs) {
+                const container = document.getElementById('conversations-list');
+                
+                if (convs.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><p>No conversations</p></div>';
+                    return;
+                }
+                
+                container.innerHTML = convs.map(conv => {
+                    const date = new Date(conv.last_message_date);
+                    const timeStr = formatTime(date);
+                    const unreadBadge = conv.unread_count > 0 ? 
+                        `<span class="unread-badge">${conv.unread_count}</span>` : '';
+                    const unreadClass = conv.unread_count > 0 ? 'unread' : '';
+                    
+                    return `
+                        <div class="conversation-item ${unreadClass}" onclick="loadConversation('${conv.address}')">
+                            <div class="conversation-name">
+                                <span>${conv.address}</span>
+                                ${unreadBadge}
+                            </div>
+                            <div class="conversation-preview">${conv.message_count} messages</div>
+                            <div class="conversation-time">${timeStr}</div>
+                        </div>
+                    `;
+                }).join('');
+            }
+            
+            async function loadConversation(address) {
+                currentConversation = address;
+                
+                // Update active state
+                document.querySelectorAll('.conversation-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                event.target.closest('.conversation-item').classList.add('active');
+                
+                // Load messages
+                try {
+                    const response = await fetch(`/api/conversation/${encodeURIComponent(address)}`);
+                    const messages = await response.json();
+                    displayMessages(messages, address);
+                } catch (error) {
+                    console.error('Error loading conversation:', error);
+                }
+            }
+            
+            function displayMessages(messages, address) {
+                const container = document.getElementById('messages-content');
+                const titleEl = document.getElementById('conversation-title');
+                const deviceBadge = document.getElementById('device-badge');
+                
+                titleEl.textContent = address;
+                
+                if (messages.length > 0 && messages[0].device_id) {
+                    deviceBadge.textContent = `📱 ${messages[0].device_id}`;
+                    deviceBadge.style.display = 'inline-block';
+                } else {
+                    deviceBadge.style.display = 'none';
+                }
+                
+                if (messages.length === 0) {
+                    container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><p>No messages</p></div>';
+                    return;
+                }
+                
+                container.innerHTML = messages.map(msg => {
+                    const date = new Date(msg.date);
+                    const timeStr = date.toLocaleString();
+                    const messageClass = msg.type === 2 ? 'sent' : 'received';
+                    const bubbleClass = msg.type === 2 ? 'sent' : 'received';
+                    
+                    return `
+                        <div class="message-group ${messageClass}">
+                            <div class="message-bubble ${bubbleClass}">
+                                <div class="message-text">${msg.body}</div>
+                                <div class="message-time">${timeStr}</div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                // Scroll to bottom
+                container.scrollTop = container.scrollHeight;
+            }
+            
+            function filterConversations(query) {
+                const filtered = conversations.filter(conv => 
+                    conv.address.toLowerCase().includes(query.toLowerCase())
+                );
+                displayConversations(filtered);
+            }
+            
+            function formatTime(date) {
+                const now = new Date();
+                const diffMs = now - date;
+                const diffMins = Math.floor(diffMs / 60000);
+                const diffHours = Math.floor(diffMs / 3600000);
+                const diffDays = Math.floor(diffMs / 86400000);
+                
+                if (diffMins < 1) return 'Just now';
+                if (diffMins < 60) return `${diffMins}m ago`;
+                if (diffHours < 24) return `${diffHours}h ago`;
+                if (diffDays < 7) return `${diffDays}d ago`;
+                return date.toLocaleDateString();
+            }
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 if __name__ == "__main__":
     import uvicorn
